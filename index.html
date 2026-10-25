@@ -3,46 +3,80 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123f34">
   <title>GrupUPA</title>
-  <link rel="stylesheet" href="style.css?v=011">
+
+  <link rel="stylesheet" href="./style.css?v=012">
 </head>
+
 <body>
   <header>
     <b class="logo">G</b>
+
     <div>
       <strong>GrupUPA</strong>
       <small>Administrasi dan Mutabaah UPA</small>
     </div>
-    <button id="logoutBtn" class="hidden secondary">Keluar</button>
+
+    <button
+      id="logoutBtn"
+      class="hidden secondary"
+      type="button"
+    >
+      Keluar
+    </button>
   </header>
 
   <main>
+    <!-- HALAMAN LOGIN -->
     <section id="loginView" class="panel login">
       <p class="eyebrow">RUANG KERJA TERPADU</p>
+
       <h1>Masuk ke GrupUPA</h1>
-      <p class="muted">Gunakan akun yang sudah terdaftar oleh Admin Pusat.</p>
+
+      <p class="muted">
+        Gunakan akun yang sudah terdaftar oleh Admin Pusat.
+      </p>
 
       <form id="loginForm">
         <label for="email">Email</label>
-        <input id="email" type="email" autocomplete="username" required>
+        <input
+          id="email"
+          type="email"
+          autocomplete="username"
+          required
+        >
 
         <label for="password">Kata sandi</label>
-        <input id="password" type="password" autocomplete="current-password" required>
+        <input
+          id="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        >
 
-        <button id="loginBtn" type="submit">Masuk</button>
+        <button id="loginBtn" type="submit">
+          Masuk
+        </button>
+
         <p id="loginMessage" role="status"></p>
       </form>
 
-      <small class="muted">Akses ditentukan oleh peran akun dan Security Rules Firebase.</small>
+      <small class="muted">
+        Akses ditentukan oleh peran akun dan Security Rules Firebase.
+      </small>
     </section>
 
+    <!-- DASHBOARD -->
     <section id="dashboardView" class="hidden">
+
       <div class="welcome">
         <div>
           <p class="eyebrow">DASHBOARD</p>
-          <h1 id="welcomeTitle">Selamat datang</h1>
+          <h1 id="welcomeTitle">Memuat akun...</h1>
           <p id="welcomeSubtitle" class="muted"></p>
         </div>
+
         <span id="roleBadge" class="badge"></span>
       </div>
 
@@ -61,36 +95,54 @@
         </article>
       </div>
 
+      <!-- DATA BINAAN -->
       <section class="panel">
         <div class="row">
           <div>
             <h2>Data binaan</h2>
-            <p class="muted">Data yang dapat dibaca oleh akun ini.</p>
+            <p class="muted">
+              Data yang dapat dibaca oleh akun ini.
+            </p>
           </div>
-          <button id="refreshBtn" class="secondary">Muat ulang</button>
+
+          <button
+            id="refreshBtn"
+            class="secondary"
+            type="button"
+          >
+            Muat ulang
+          </button>
         </div>
-        <div id="binaanList">Data belum dimuat.</div>
+
+        <div id="binaanList">
+          Data belum dimuat.
+        </div>
       </section>
 
+      <!-- STATUS PENGUJIAN -->
       <section class="panel">
         <h2>Status pengujian</h2>
+
         <ul id="testList">
           <li>🟡 Login Firebase</li>
           <li>🟡 Profil dan peran</li>
           <li>🟡 Akses data UPA</li>
           <li>🟡 Akses daftar binaan</li>
         </ul>
+
         <p class="muted">
-          Ini pemeriksaan awal. Isolasi antar-UPA harus diuji dengan akun UPA lain
-          sebelum digunakan untuk data nyata.
+          Pengujian ini belum membuktikan isolasi data antar-UPA.
+          Jangan gunakan data nyata sebelum pengujian keamanan selesai.
         </p>
       </section>
     </section>
   </main>
 
-  <footer>GrupUPA · Versi diagnostik 0.1.1</footer>
+  <footer>
+    GrupUPA · Versi diagnostik 0.1.2
+  </footer>
 
-  <script type="module" src="firebase.js?v=011"></script>
-  <script type="module" src="app.js?v=011"></script>
+  <!-- Parameter versi memaksa browser meminta modul dengan URL baru -->
+  <script type="module" src="./app.js?v=012"></script>
 </body>
 </html>
