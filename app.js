@@ -17,11 +17,12 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 const ROOT_UID = "5L0w42CRcgVVvqk47dF5vVXOQOV2";
+const UPA_TEST_UID = "8tNL1G7bhjg9sUWrrtiM5YbB1tl1";
+const KNOWN_UPAS = ["UPA001", "UPA002"];
 
 const $ = id => document.getElementById(id);
-
-const show = el => el.classList.remove("hidden");
-const hide = el => el.classList.add("hidden");
+const show = el => el?.classList.remove("hidden");
+const hide = el => el?.classList.add("hidden");
 
 function setMessage(id, message, error = false) {
   const el = $(id);
@@ -47,9 +48,8 @@ function escapeHTML(value) {
 
 $("loginForm")?.addEventListener("submit", async event => {
   event.preventDefault();
-
   setMessage("loginMessage", "Memeriksa akun…");
-  $("loginBtn").disabled = true;
+  if ($("loginBtn")) $("loginBtn").disabled = true;
 
   try {
     await signInWithEmailAndPassword(
@@ -65,20 +65,17 @@ $("loginForm")?.addEventListener("submit", async event => {
       "auth/too-many-requests": "Terlalu banyak percobaan. Coba lagi nanti.",
       "auth/network-request-failed": "Periksa koneksi internet."
     };
-
     setMessage(
       "loginMessage",
       messages[error.code] || `Login gagal: ${error.code || error.message}`,
       true
     );
   } finally {
-    $("loginBtn").disabled = false;
+    if ($("loginBtn")) $("loginBtn").disabled = false;
   }
 });
 
-$("logoutBtn")?.addEventListener("click", async () => {
-  await signOut(auth);
-});
+$("logoutBtn")?.addEventListener("click", () => signOut(auth));
 
 $("refreshBtn")?.addEventListener("click", () => {
   if (auth.currentUser) loadDashboard(auth.currentUser);
@@ -95,77 +92,87 @@ onAuthStateChanged(auth, user => {
   hide($("loginView"));
   show($("dashboardView"));
   show($("logoutBtn"));
-
   loadDashboard(user);
 });
+
+async function findMemberProfile(user) {
+  for (const upaId of KNOWN_UPAS) {
+    try {
+      const snap = await getDoc(
+        doc(db, "upas", upaId, "anggota", user.uid)
+      );
+
+      if (!snap.exists()) continue;
+
+      const profile = snap.data();
+
+      if (profile.aktif !== true) {
+        return {
+          error: `Akun pada ${upaId} ditemukan tetapi tidak aktif.`
+        };
+      }
+
+      return { profile, upaId };
+    } catch (error) {
+      if (error.code === "permission-denied") continue;
+      throw error;
+    }
+  }
+
+  return {
+    error:
+      "Profil tidak ditemukan pada UPA yang dikonfigurasi. " +
+      "Periksa ID dokumen, nama koleksi, dan Security Rules."
+  };
+}
 
 async function loadDashboard(user) {
   $("welcomeTitle").textContent = "Memuat profil…";
   $("welcomeSubtitle").textContent = user.email || user.uid;
-  $("upaName").textContent = "Memeriksa akses…";
+  $("upaName").textContent = "—";
   $("upaIdLabel").textContent = "";
   $("accountStatus").textContent = "Memeriksa…";
   $("binaanList").textContent = "Memuat data…";
 
   hide($("alertBox"));
+  removeIsolationPanel();
 
   setTest(0, "✅", "Login Firebase berhasil");
-  setTest(1, "🟡", "Mencari profil anggota");
+  setTest(1, "🟡", "Memeriksa profil dan peran");
   setTest(2, "🟡", "Memeriksa data UPA");
   setTest(3, "🟡", "Memeriksa daftar binaan");
 
   try {
-    let profile = null;
-    let role = "";
+    let profile;
+    let role;
     let upaId = "";
 
     if (user.uid === ROOT_UID) {
-      const rootDoc = await getDoc(doc(db, "users", user.uid));
+      const snap = await getDoc(doc(db, "users", user.uid));
 
-      if (!rootDoc.exists()) {
-        throw new Error("Profil Admin Pusat tidak ditemukan di users.");
+      if (!snap.exists()) {
+        throw new Error("Profil Admin Pusat tidak ditemukan.");
       }
 
-      profile = rootDoc.data();
+      profile = snap.data();
       role = "admin_pusat";
     } else {
-      /*
-       * Daftar UPA yang diizinkan untuk dicoba.
-       * Penambahan UPA baru di sini bukan pemberian izin:
-       * Firestore Security Rules tetap menentukan akses.
-       */
-      const knownUpaIds = ["UPA001", "UPA002"];
+      const result = await findMemberProfile(user);
 
-      for (const candidateUpaId of knownUpaIds) {
-        try {
-          const memberDoc = await getDoc(
-            doc(db, "upas", candidateUpaId, "anggota", user.uid)
-          );
-
-          if (memberDoc.exists()) {
-            const candidateProfile = memberDoc.data();
-
-            if (candidateProfile.aktif === true) {
-              profile = candidateProfile;
-              role = candidateProfile.role || "";
-              upaId = candidateUpaId;
-              break;
-            }
-          }
-        } catch (error) {
-          if (error.code !== "permission-denied") throw error;
-        }
+      if (!result.profile) {
+        throw new Error(result.error);
       }
 
-      if (!profile) {
-        throw new Error(
-          "Profil aktif tidak ditemukan pada UPA yang dikonfigurasi. " +
-          "Periksa ID dokumen anggota, nama koleksi, dan Security Rules."
-        );
-      }
+      profile = result.profile;
+      role = profile.role || "";
+      upaId = result.upaId;
     }
 
-    if (role !== "admin_pusat" && role !== "admin_upa" && role !== "pembina") {
+    if (
+      role !== "admin_pusat" &&
+      role !== "admin_upa" &&
+      role !== "pembina"
+    ) {
       throw new Error("Peran akun tidak dikenal atau tidak diizinkan.");
     }
 
@@ -186,79 +193,59 @@ async function loadDashboard(user) {
     if (role === "admin_pusat") {
       $("upaName").textContent = "Admin Pusat";
       $("upaIdLabel").textContent = "Akses tingkat pusat";
-
-      setTest(2, "✅", "Profil Admin Pusat ditemukan");
+      setTest(2, "✅", "Profil Admin Pusat berhasil dibaca");
       $("binaanList").textContent =
-        "Pilih UPA tertentu untuk melihat data binaannya.";
-      setTest(3, "ℹ️", "Data binaan belum dipilih");
+        "Dashboard awal. Pilih UPA setelah fitur administrasi pusat tersedia.";
+      setTest(3, "ℹ️", "Daftar binaan belum dimuat");
       return;
     }
 
-    const upaDoc = await getDoc(doc(db, "upas", upaId));
+    const upaSnap = await getDoc(doc(db, "upas", upaId));
 
-    if (!upaDoc.exists()) {
+    if (!upaSnap.exists()) {
       throw new Error(`Dokumen upas/${upaId} tidak ditemukan.`);
     }
 
-    const upaData = upaDoc.data();
-
+    const upaData = upaSnap.data();
     $("upaName").textContent = upaData.nama || upaId;
     $("upaIdLabel").textContent = `ID UPA: ${upaId}`;
 
     setTest(2, "✅", `Data ${upaId} berhasil dibaca`);
 
     try {
-      const binaanQuery = query(
-        collection(db, "upas", upaId, "binaan"),
-        limit(50)
+      const snap = await getDocs(
+        query(collection(db, "upas", upaId, "binaan"), limit(50))
       );
 
-      const binaanSnapshot = await getDocs(binaanQuery);
-
-      let binaanDocs = binaanSnapshot.docs;
+      let items = snap.docs;
 
       if (role === "pembina") {
-        binaanDocs = binaanDocs.filter(
+        items = items.filter(
           item => item.data().pembinaUid === user.uid
         );
       }
 
-      if (binaanDocs.length === 0) {
-        $("binaanList").textContent =
-          "Belum ada data binaan atau belum ada binaan yang ditugaskan.";
-      } else {
-        $("binaanList").innerHTML = binaanDocs.map(item => {
-          const data = item.data();
-
-          return `
+      $("binaanList").innerHTML = items.length
+        ? items.map(item => `
             <article class="data-row">
               <div>
-                <b>${escapeHTML(data.nama || "Tanpa nama")}</b>
+                <b>${escapeHTML(item.data().nama || "Tanpa nama")}</b>
                 <small>ID: ${escapeHTML(item.id)}</small>
               </div>
             </article>
-          `;
-        }).join("");
-      }
+          `).join("")
+        : "Belum ada data binaan atau belum ada binaan yang ditugaskan.";
 
-      setTest(
-        3,
-        "✅",
-        `Daftar binaan ${upaId} berhasil dibaca (${binaanDocs.length})`
-      );
+      setTest(3, "✅", `Daftar binaan berhasil dibaca (${items.length})`);
     } catch (error) {
       $("binaanList").textContent =
-        "Belum dapat membaca daftar binaan. Periksa izin akses.";
+        "Pembacaan binaan gagal. Periksa izin akses.";
 
-      setTest(
-        3,
-        "❌",
-        `Akses binaan gagal: ${error.code || error.message}`
-      );
+      setTest(3, "❌", `Akses binaan gagal: ${error.code || error.message}`);
+    }
 
-      show($("alertBox"));
-      $("alertBox").textContent =
-        `Pembacaan binaan ${upaId} gagal: ${error.code || error.message}`;
+    if (user.uid === UPA_TEST_UID) {
+      await runIsolationTest();
     }
   } catch (error) {
     $("welcomeTitle").textContent = "Akun belum memiliki akses";
@@ -275,4 +262,87 @@ async function loadDashboard(user) {
     show($("alertBox"));
     $("alertBox").textContent = error.message;
   }
+}
+
+function removeIsolationPanel() {
+  document.getElementById("isolationTestResult")?.remove();
+}
+
+async function runIsolationTest() {
+  const results = [];
+
+  async function check(label, operation) {
+    try {
+      await operation();
+      results.push({
+        label,
+        status: "GAGAL",
+        detail: "Akses berhasil, padahal seharusnya ditolak."
+      });
+    } catch (error) {
+      if (error.code === "permission-denied") {
+        results.push({
+          label,
+          status: "LULUS",
+          detail: "Firestore menolak akses."
+        });
+      } else {
+        results.push({
+          label,
+          status: "BELUM PASTI",
+          detail: error.code || error.message
+        });
+      }
+    }
+  }
+
+  await check("Membaca dokumen UPA001", async () => {
+    await getDoc(doc(db, "upas", "UPA001"));
+  });
+
+  await check("Membaca profil Admin UPA001", async () => {
+    await getDoc(
+      doc(db, "upas", "UPA001", "anggota",
+        "Qo8huhew52eEOPHO9TAOZrzd8lI2")
+    );
+  });
+
+  await check("Membaca daftar anggota UPA001", async () => {
+    await getDocs(
+      query(collection(db, "upas", "UPA001", "anggota"), limit(1))
+    );
+  });
+
+  let panel = document.getElementById("isolationTestResult");
+
+  if (!panel) {
+    panel = document.createElement("section");
+    panel.id = "isolationTestResult";
+    panel.className = "panel";
+    $("dashboardView").appendChild(panel);
+  }
+
+  panel.replaceChildren();
+
+  const heading = document.createElement("h2");
+  heading.textContent = "Pengujian Isolasi UPA002";
+  panel.appendChild(heading);
+
+  const intro = document.createElement("p");
+  intro.textContent =
+    "Pengujian baca-saja. Tidak ada dokumen yang diubah atau dihapus.";
+  panel.appendChild(intro);
+
+  results.forEach(result => {
+    const p = document.createElement("p");
+    p.textContent = `${result.status} — ${result.label}: ${result.detail}`;
+    panel.appendChild(p);
+  });
+
+  const allPassed = results.every(item => item.status === "LULUS");
+  const summary = document.createElement("p");
+  summary.textContent = allPassed
+    ? "Ketiga percobaan akses lintas-UPA ditolak."
+    : "Pengujian belum seluruhnya lulus. Periksa hasil setiap baris.";
+  panel.appendChild(summary);
 }
