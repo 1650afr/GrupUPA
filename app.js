@@ -384,67 +384,54 @@ async function runWriteIsolationTest() {
   const otherUpaId = UPA_IDS.find(id => id !== currentUpaId);
 
   if (!otherUpaId) {
-    $("writeTestResult").textContent = "UPA pembanding tidak tersedia.";
+    $("writeTestResult").textContent =
+      "UPA pembanding tidak ditemukan.";
     return;
   }
 
   testRunning = true;
   renderSecurityTest();
 
-  const button = $("runWriteTestBtn");
   const result = $("writeTestResult");
 
-  result.textContent =
-    `Menguji pembuatan dokumen sementara pada ${otherUpaId}...`;
-
-  const testId =
-    `uji_keamanan_${currentUser.uid}_${Date.now()}`;
-
-  const testRef = doc(
-    db,
-    "upas",
-    otherUpaId,
-    "__security_tests__",
-    testId
-  );
-
   try {
+    const testRef = doc(
+      db,
+      "upas",
+      otherUpaId,
+      "__security_tests__",
+      "uji_isolasi_tulis"
+    );
+
     await setDoc(testRef, {
       jenis: "uji_isolasi_tulis",
       uidPenguji: currentUser.uid,
-      upaAsal: currentUpaId,
-      dibuatPada: new Date().toISOString()
+      upaAsal: currentUpaId
     });
 
-    // Jika penulisan berhasil, keamanan gagal.
-    // Coba bersihkan dokumen uji jika izin memungkinkan.
-    let cleanupMessage = "";
+    result.textContent =
+      "❌ GAGAL: Firestore mengizinkan penulisan lintas-UPA. " +
+      "Hentikan pengujian dan periksa Security Rules.";
 
     try {
       await deleteDoc(testRef);
-      cleanupMessage = " Dokumen uji berhasil dibersihkan.";
+      result.textContent += " Dokumen uji berhasil dihapus.";
     } catch {
-      cleanupMessage =
-        " PERHATIAN: dokumen uji mungkin masih ada; periksa Firestore.";
+      result.textContent +=
+        " Dokumen uji mungkin masih ada; periksa Firestore.";
     }
-
-    result.textContent =
-      `❌ GAGAL: akun ${currentUpaId} berhasil membuat dokumen ` +
-      `di ${otherUpaId}.${cleanupMessage} Jangan gunakan data nyata ` +
-      `sebelum aturan diperiksa.`;
   } catch (error) {
     if (error.code === "permission-denied") {
       result.textContent =
-        `✅ LULUS: Firestore menolak pembuatan dokumen uji ` +
-        `oleh ${currentUpaId} di ${otherUpaId}.`;
+        `✅ LULUS: Firestore menolak penulisan dari ` +
+        `${currentUpaId} ke ${otherUpaId}.`;
     } else {
       result.textContent =
-        `⚠️ BELUM DAPAT DINILAI: ${errorText(error)}. ` +
-        `Periksa koneksi dan konfigurasi Firebase.`;
+        `⚠️ BELUM DAPAT DINILAI: ${errorText(error)}.`;
     }
   } finally {
     testRunning = false;
-    if (button) button.disabled = false;
     renderSecurityTest();
   }
 }
+
