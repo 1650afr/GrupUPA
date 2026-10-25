@@ -13,19 +13,22 @@ import {
   getDocs,
   collection,
   query,
-  limit
+  limit,
+  setDoc,
+  deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 const ROOT_UID = "5L0w42CRcgVVvqk47dF5vVXOQOV2";
-const UPA001_ADMIN_UID = "Qo8huhew52eEOPHO9TAOZrzd8lI2";
-const UPA002_ADMIN_UID = "8tNL1G7bhjg9sUWrrtiM5YbB1tl1";
-const KNOWN_UPAS = ["UPA001", "UPA002"];
+const UPA_IDS = ["UPA001", "UPA002"];
 
 const $ = id => document.getElementById(id);
 const show = el => el?.classList.remove("hidden");
 const hide = el => el?.classList.add("hidden");
 
-let currentLoadId = 0;
+let currentUser = null;
+let currentProfile = null;
+let currentUpaId = null;
+let testRunning = false;
 
 function setMessage(id, message, error = false) {
   const el = $(id);
@@ -35,18 +38,8 @@ function setMessage(id, message, error = false) {
 }
 
 function setTest(index, icon, message) {
-  const el = $("testList")?.children[index];
-  if (el) el.textContent = `${icon} ${message}`;
-}
-
-function escapeHTML(value) {
-  return String(value ?? "").replace(/[&<>"']/g, char => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  })[char]);
+  const item = $("testList")?.children[index];
+  if (item) item.textContent = `${icon} ${message}`;
 }
 
 function showAlert(message) {
@@ -63,11 +56,18 @@ function clearAlert() {
   hide(el);
 }
 
+function errorText(error) {
+  return error?.code || error?.message || "Kesalahan tidak diketahui";
+}
+
+// Login
 $("loginForm")?.addEventListener("submit", async event => {
   event.preventDefault();
-  setMessage("loginMessage", "Memeriksa akun…");
 
-  if ($("loginBtn")) $("loginBtn").disabled = true;
+  const button = $("loginBtn");
+  if (button) button.disabled = true;
+
+  setMessage("loginMessage", "Memeriksa akun...");
 
   try {
     await signInWithEmailAndPassword(
@@ -75,7 +75,6 @@ $("loginForm")?.addEventListener("submit", async event => {
       $("email").value.trim(),
       $("password").value
     );
-    setMessage("loginMessage", "Login berhasil. Memuat profil…");
   } catch (error) {
     const messages = {
       "auth/invalid-credential": "Email atau kata sandi salah.",
@@ -86,34 +85,34 @@ $("loginForm")?.addEventListener("submit", async event => {
 
     setMessage(
       "loginMessage",
-      messages[error.code] || `Login gagal: ${error.code || error.message}`,
+      messages[error.code] || `Login gagal: ${errorText(error)}`,
       true
     );
   } finally {
-    if ($("loginBtn")) $("loginBtn").disabled = false;
+    if (button) button.disabled = false;
   }
 });
 
+// Logout
 $("logoutBtn")?.addEventListener("click", async () => {
-  try {
-    await signOut(auth);
-  } catch (error) {
-    showAlert(`Gagal keluar: ${error.code || error.message}`);
-  }
+  await signOut(auth);
 });
 
-$("refreshBtn")?.addEventListener("click", () => {
-  if (auth.currentUser) loadDashboard(auth.currentUser);
+// Muat ulang data
+$("refreshBtn")?.addEventListener("click", async () => {
+  if (auth.currentUser) await loadDashboard(auth.currentUser);
 });
 
-onAuthStateChanged(auth, user => {
-  currentLoadId++;
+// Pantau status login
+onAuthStateChanged(auth, async user => {
+  currentUser = user;
 
   if (!user) {
+    currentProfile = null;
+    currentUpaId = null;
     show($("loginView"));
     hide($("dashboardView"));
     hide($("logoutBtn"));
-    removeIsolationPanel();
     return;
   }
 
@@ -121,296 +120,331 @@ onAuthStateChanged(auth, user => {
   show($("dashboardView"));
   show($("logoutBtn"));
 
-  loadDashboard(user);
+  await loadDashboard(user);
 });
 
-async function findMemberProfile(user) {
-  let permissionDeniedCount = 0;
+// Cari profil dan tentukan UPA dari dokumen anggota
+async function findProfile(user) {
+  if (user.uid === ROOT_UID) {
+    const snapshot = await getDoc(doc(db, "users", user.uid));
 
-  for (const upaId of KNOWN_UPAS) {
-    try {
-      const snap = await getDoc(
-        doc(db, "upas", upaId, "anggota", user.uid)
-      );
+    return {
+      role: "admin_pusat",
+      profile: snapshot.exists() ? snapshot.data() : null,
+      upaId: null,
+      path: `users/${user.uid}`
+    };
+  }
 
-      if (!snap.exists()) continue;
+  for (const upaId of UPA_IDS) {
+    const path = `upas/${upaId}/anggota/${user.uid}`;
 
-      const profile = snap.data();
+    const snapshot = await getDoc(
+      doc(db, "upas", upaId, "anggota", user.uid)
+    );
 
-      if (profile.aktif !== true) {
-        return {
-          error: `Akun pada ${upaId} ditemukan tetapi tidak aktif.`
-        };
-      }
-
-      return { profile, upaId };
-    } catch (error) {
-      if (error.code === "permission-denied") {
-        permissionDeniedCount++;
-        continue;
-      }
-
-      throw error;
+    if (snapshot.exists()) {
+      return {
+        role: snapshot.data().role || "",
+        profile: snapshot.data(),
+        upaId,
+        path
+      };
     }
   }
 
   return {
-    error: permissionDeniedCount === KNOWN_UPAS.length
-      ? "Profil tidak dapat dibaca pada UPA yang dikonfigurasi. " +
-        "Periksa jalur dokumen dan Security Rules."
-      : "Profil anggota tidak ditemukan. Periksa UID, nama koleksi, " +
-        "dan ID UPA."
+    role: "",
+    profile: null,
+    upaId: null,
+    path: "Profil anggota tidak ditemukan"
   };
 }
 
 async function loadDashboard(user) {
-  const loadId = ++currentLoadId;
-
-  $("welcomeTitle").textContent = "Memuat profil…";
-  $("welcomeSubtitle").textContent = user.email || user.uid;
-  $("upaName").textContent = "—";
-  $("upaIdLabel").textContent = "";
-  $("accountStatus").textContent = "Memeriksa…";
-  $("binaanList").textContent = "Memuat data…";
-
   clearAlert();
-  removeIsolationPanel();
 
-  setTest(0, "✅", "Login Firebase berhasil");
+  $("welcomeTitle").textContent = "Memuat profil...";
+  $("welcomeSubtitle").textContent = user.email || user.uid;
+  $("upaName").textContent = "Memuat...";
+  $("upaIdLabel").textContent = "";
+  $("accountStatus").textContent = "Memeriksa...";
+  $("binaanList").textContent = "Memuat data binaan...";
+
+  setTest(0, "🟡", "Login Firebase berhasil");
   setTest(1, "🟡", "Memeriksa profil dan peran");
   setTest(2, "🟡", "Memeriksa data UPA");
   setTest(3, "🟡", "Memeriksa daftar binaan");
 
   try {
-    let profile;
-    let role;
-    let upaId = "";
-
-    if (user.uid === ROOT_UID) {
-      const snap = await getDoc(doc(db, "users", user.uid));
-
-      if (loadId !== currentLoadId) return;
-
-      if (!snap.exists()) {
-        throw new Error("Profil Admin Pusat tidak ditemukan.");
-      }
-
-      profile = snap.data();
-      role = "admin_pusat";
-    } else {
-      const result = await findMemberProfile(user);
-
-      if (loadId !== currentLoadId) return;
-
-      if (!result.profile) {
-        throw new Error(result.error);
-      }
-
-      profile = result.profile;
-      role = profile.role || "";
-      upaId = result.upaId;
-    }
+    const result = await findProfile(user);
+    currentProfile = result.profile;
+    currentUpaId = result.upaId;
 
     if (
-      role !== "admin_pusat" &&
-      role !== "admin_upa" &&
-      role !== "pembina"
+      !result.profile ||
+      result.profile.aktif !== true ||
+      !["admin_pusat", "admin_upa", "pembina"].includes(result.role)
     ) {
-      throw new Error("Peran akun tidak dikenal atau tidak diizinkan.");
+      $("welcomeTitle").textContent = "Akun belum memiliki akses";
+      $("roleBadge").textContent = "Akses ditolak";
+      $("accountStatus").textContent = "Profil tidak valid";
+      $("upaName").textContent = "—";
+      $("binaanList").textContent =
+        "Periksa jalur profil, peran, dan field aktif di Firestore.";
+
+      setTest(0, "✅", "Login Firebase berhasil");
+      setTest(1, "❌", "Profil tidak ditemukan atau tidak valid");
+      setTest(2, "—", "Belum diuji");
+      setTest(3, "—", "Belum diuji");
+
+      showAlert(
+        `Profil tidak valid.\nUID: ${user.uid}\nJalur: ${result.path}\n` +
+        `Role: ${result.role || "tidak ditemukan"}\n` +
+        `Aktif: ${String(result.profile?.aktif)}`
+      );
+
+      renderSecurityTest();
+      return;
     }
 
-    setTest(1, "✅", `Profil ditemukan: ${role}`);
-
     $("welcomeTitle").textContent =
-      "Selamat datang" + (profile.nama ? `, ${profile.nama}` : "");
+      `Selamat datang${result.profile.nama ? ", " + result.profile.nama : ""}`;
 
     $("roleBadge").textContent =
-      role === "admin_pusat"
+      result.role === "admin_pusat"
         ? "Admin Pusat"
-        : role === "admin_upa"
+        : result.role === "admin_upa"
           ? "Admin UPA"
           : "Pembina";
 
     $("accountStatus").textContent = "Aktif";
+    setTest(0, "✅", "Login Firebase berhasil");
+    setTest(1, "✅", `Profil ditemukan: ${result.role}`);
 
-    if (role === "admin_pusat") {
-      $("upaName").textContent = "Admin Pusat";
-      $("upaIdLabel").textContent = "Akses tingkat pusat";
+    if (!result.upaId) {
+      $("upaName").textContent = "Administrasi Pusat";
+      $("upaIdLabel").textContent = "Akses pusat";
+      setTest(2, "✅", "Profil Admin Pusat berhasil dibaca");
+      setTest(3, "—", "Daftar binaan UPA belum diuji");
       $("binaanList").textContent =
-        "Dashboard Admin Pusat. Fitur pemilihan UPA akan dibuat pada tahap berikutnya.";
-
-      setTest(2, "ℹ️", "Profil pusat berhasil dibaca");
-      setTest(3, "ℹ️", "Daftar binaan belum dimuat");
+        "Pilih UPA tertentu untuk pemeriksaan data anggotanya.";
+      renderSecurityTest();
       return;
     }
 
-    const upaSnap = await getDoc(doc(db, "upas", upaId));
+    const upaSnapshot = await getDoc(
+      doc(db, "upas", result.upaId)
+    );
 
-    if (loadId !== currentLoadId) return;
-
-    if (!upaSnap.exists()) {
-      throw new Error(`Dokumen upas/${upaId} tidak ditemukan.`);
+    if (!upaSnapshot.exists()) {
+      $("upaName").textContent = "UPA tidak ditemukan";
+      $("upaIdLabel").textContent = `ID UPA: ${result.upaId}`;
+      setTest(2, "❌", "Dokumen UPA tidak ditemukan");
+      $("binaanList").textContent = "Data UPA tidak tersedia.";
+      setTest(3, "—", "Belum diuji");
+      renderSecurityTest();
+      return;
     }
 
-    const upaData = upaSnap.data();
-    $("upaName").textContent = upaData.nama || upaId;
-    $("upaIdLabel").textContent = `ID UPA: ${upaId}`;
-
-    setTest(2, "✅", `Data ${upaId} berhasil dibaca`);
+    $("upaName").textContent =
+      upaSnapshot.data().nama || result.upaId;
+    $("upaIdLabel").textContent = `ID UPA: ${result.upaId}`;
+    setTest(2, "✅", `Data ${result.upaId} berhasil dibaca`);
 
     try {
-      const binaanSnap = await getDocs(
-        query(collection(db, "upas", upaId, "binaan"), limit(50))
+      const snapshot = await getDocs(
+        query(
+          collection(db, "upas", result.upaId, "binaan"),
+          limit(50)
+        )
       );
 
-      if (loadId !== currentLoadId) return;
+      let binaan = snapshot.docs.map(item => ({
+        id: item.id,
+        ...item.data()
+      }));
 
-      let items = binaanSnap.docs;
-
-      if (role === "pembina") {
-        items = items.filter(
-          item => item.data().pembinaUid === user.uid
+      if (result.role === "pembina") {
+        binaan = binaan.filter(
+          item => item.pembinaUid === user.uid
         );
       }
 
-      $("binaanList").innerHTML = items.length
-        ? items.map(item => `
-            <article class="data-row">
-              <div>
-                <b>${escapeHTML(item.data().nama || "Tanpa nama")}</b>
-                <small>ID: ${escapeHTML(item.id)}</small>
-              </div>
-            </article>
-          `).join("")
-        : "Belum ada data binaan atau belum ada binaan yang ditugaskan.";
+      const list = $("binaanList");
+      list.replaceChildren();
 
-      setTest(3, "✅", `Daftar binaan berhasil dibaca (${items.length})`);
-    } catch (error) {
-      $("binaanList").textContent =
-        "Pembacaan binaan gagal. Periksa izin akses.";
-
-      setTest(3, "❌", `Akses binaan gagal: ${error.code || error.message}`);
-      showAlert(`Pembacaan binaan gagal: ${error.code || error.message}`);
-    }
-
-    if (
-      user.uid === UPA001_ADMIN_UID ||
-      user.uid === UPA002_ADMIN_UID
-    ) {
-      await runIsolationTest(user, upaId, loadId);
-    }
-  } catch (error) {
-    if (loadId !== currentLoadId) return;
-
-    $("welcomeTitle").textContent = "Akun belum memiliki akses";
-    $("roleBadge").textContent = "Akses ditolak";
-    $("accountStatus").textContent = "Periksa profil";
-    $("upaName").textContent = "—";
-    $("upaIdLabel").textContent = "";
-    $("binaanList").textContent = error.message;
-
-    setTest(1, "❌", "Profil tidak valid atau tidak dapat dibaca");
-    setTest(2, "—", "Belum berhasil diuji");
-    setTest(3, "—", "Belum berhasil diuji");
-
-    showAlert(error.message);
-  }
-}
-
-function removeIsolationPanel() {
-  document.getElementById("isolationTestResult")?.remove();
-}
-
-async function runIsolationTest(user, ownUpaId, loadId) {
-  const targetUPA = ownUpaId === "UPA001" ? "UPA002" : "UPA001";
-
-  const targetAdminUID = targetUPA === "UPA001"
-    ? UPA001_ADMIN_UID
-    : UPA002_ADMIN_UID;
-
-  const results = [];
-
-  async function check(label, operation) {
-    try {
-      await operation();
-
-      results.push({
-        status: "GAGAL",
-        label,
-        detail: "Akses berhasil. Periksa apakah aturan mengizinkan akses ini."
-      });
-    } catch (error) {
-      if (error.code === "permission-denied") {
-        results.push({
-          status: "LULUS",
-          label,
-          detail: "Firestore menolak akses."
-        });
+      if (!binaan.length) {
+        list.textContent =
+          "Belum ada data binaan atau belum ada binaan yang ditugaskan.";
       } else {
-        results.push({
-          status: "BELUM PASTI",
-          label,
-          detail: error.code || error.message
+        binaan.forEach(item => {
+          const article = document.createElement("article");
+          article.className = "data-row";
+
+          const name = document.createElement("b");
+          name.textContent = item.nama || "Tanpa nama";
+
+          const id = document.createElement("small");
+          id.textContent = `ID: ${item.id}`;
+
+          const content = document.createElement("div");
+          content.append(name, id);
+          article.append(content);
+          list.append(article);
         });
       }
+
+      setTest(3, "✅", `Daftar binaan berhasil dibaca (${binaan.length})`);
+    } catch (error) {
+      $("binaanList").textContent =
+        "Gagal membaca binaan. Periksa Security Rules.";
+      setTest(3, "❌", `Akses binaan gagal: ${errorText(error)}`);
     }
+
+    renderSecurityTest();
+  } catch (error) {
+    $("welcomeTitle").textContent = "Pemeriksaan belum selesai";
+    $("accountStatus").textContent = "Gagal diperiksa";
+    $("upaName").textContent = "—";
+    $("binaanList").textContent = "Periksa koneksi dan Security Rules.";
+
+    showAlert(`Pemeriksaan gagal: ${errorText(error)}`);
+    setTest(1, "❌", `Gagal membaca profil: ${errorText(error)}`);
+    renderSecurityTest();
   }
+}
 
-  await check(`Membaca dokumen ${targetUPA}`, async () => {
-    await getDoc(doc(db, "upas", targetUPA));
-  });
+// Buat panel pengujian tanpa mengubah index.html
+function renderSecurityTest() {
+  const dashboard = $("dashboardView");
+  if (!dashboard) return;
 
-  if (loadId !== currentLoadId || auth.currentUser?.uid !== user.uid) return;
-
-  await check(`Membaca profil Admin ${targetUPA}`, async () => {
-    await getDoc(
-      doc(db, "upas", targetUPA, "anggota", targetAdminUID)
-    );
-  });
-
-  if (loadId !== currentLoadId || auth.currentUser?.uid !== user.uid) return;
-
-  await check(`Membaca daftar anggota ${targetUPA}`, async () => {
-    await getDocs(
-      query(
-        collection(db, "upas", targetUPA, "anggota"),
-        limit(1)
-      )
-    );
-  });
-
-  if (loadId !== currentLoadId || auth.currentUser?.uid !== user.uid) return;
-
-  let panel = document.getElementById("isolationTestResult");
+  let panel = $("securityTestPanel");
 
   if (!panel) {
     panel = document.createElement("section");
-    panel.id = "isolationTestResult";
+    panel.id = "securityTestPanel";
     panel.className = "panel";
-    $("dashboardView").appendChild(panel);
+
+    const heading = document.createElement("h2");
+    heading.textContent = "Pengujian Keamanan Tulis";
+
+    const description = document.createElement("p");
+    description.className = "muted";
+    description.textContent =
+      "Uji apakah akun ini dapat membuat dokumen di UPA lain. " +
+      "Pengujian tidak mengubah dokumen anggota atau binaan.";
+
+    const button = document.createElement("button");
+    button.id = "runWriteTestBtn";
+    button.textContent = "Uji Isolasi Tulis";
+    button.addEventListener("click", runWriteIsolationTest);
+
+    const result = document.createElement("div");
+    result.id = "writeTestResult";
+    result.setAttribute("role", "status");
+
+    panel.append(heading, description, button, result);
+    dashboard.append(panel);
   }
 
-  panel.replaceChildren();
+  const button = $("runWriteTestBtn");
 
-  const heading = document.createElement("h2");
-  heading.textContent = `Pengujian Isolasi ${ownUpaId} → ${targetUPA}`;
-  panel.appendChild(heading);
+  if (button) {
+    button.disabled =
+      !currentUser ||
+      !currentProfile ||
+      !currentUpaId ||
+      currentProfile.role !== "admin_upa" ||
+      testRunning;
 
-  const intro = document.createElement("p");
-  intro.textContent =
-    "Pemeriksaan baca-saja. Tidak ada dokumen yang dibuat, diubah, atau dihapus.";
-  panel.appendChild(intro);
+    button.textContent = testRunning
+      ? "Pengujian berlangsung..."
+      : "Uji Isolasi Tulis";
+  }
 
-  results.forEach(result => {
-    const p = document.createElement("p");
-    p.textContent = `${result.status} — ${result.label}: ${result.detail}`;
-    panel.appendChild(p);
-  });
+  if (currentProfile?.role === "admin_pusat") {
+    $("writeTestResult").textContent =
+      "Pengujian ini ditujukan untuk akun Admin UPA.";
+  }
+}
 
-  const summary = document.createElement("p");
-  summary.textContent = results.every(item => item.status === "LULUS")
-    ? "Ketiga percobaan akses lintas-UPA ditolak."
-    : "Pengujian belum seluruhnya lulus. Periksa hasil setiap baris.";
+// Uji CREATE lintas-UPA dengan dokumen sementara
+async function runWriteIsolationTest() {
+  if (
+    testRunning ||
+    !currentUser ||
+    !currentUpaId ||
+    currentProfile?.role !== "admin_upa"
+  ) {
+    return;
+  }
 
-  panel.appendChild(summary);
+  const otherUpaId = UPA_IDS.find(id => id !== currentUpaId);
+
+  if (!otherUpaId) {
+    $("writeTestResult").textContent = "UPA pembanding tidak tersedia.";
+    return;
+  }
+
+  testRunning = true;
+  renderSecurityTest();
+
+  const button = $("runWriteTestBtn");
+  const result = $("writeTestResult");
+
+  result.textContent =
+    `Menguji pembuatan dokumen sementara pada ${otherUpaId}...`;
+
+  const testId =
+    `uji_keamanan_${currentUser.uid}_${Date.now()}`;
+
+  const testRef = doc(
+    db,
+    "upas",
+    otherUpaId,
+    "__security_tests__",
+    testId
+  );
+
+  try {
+    await setDoc(testRef, {
+      jenis: "uji_isolasi_tulis",
+      uidPenguji: currentUser.uid,
+      upaAsal: currentUpaId,
+      dibuatPada: new Date().toISOString()
+    });
+
+    // Jika penulisan berhasil, keamanan gagal.
+    // Coba bersihkan dokumen uji jika izin memungkinkan.
+    let cleanupMessage = "";
+
+    try {
+      await deleteDoc(testRef);
+      cleanupMessage = " Dokumen uji berhasil dibersihkan.";
+    } catch {
+      cleanupMessage =
+        " PERHATIAN: dokumen uji mungkin masih ada; periksa Firestore.";
+    }
+
+    result.textContent =
+      `❌ GAGAL: akun ${currentUpaId} berhasil membuat dokumen ` +
+      `di ${otherUpaId}.${cleanupMessage} Jangan gunakan data nyata ` +
+      `sebelum aturan diperiksa.`;
+  } catch (error) {
+    if (error.code === "permission-denied") {
+      result.textContent =
+        `✅ LULUS: Firestore menolak pembuatan dokumen uji ` +
+        `oleh ${currentUpaId} di ${otherUpaId}.`;
+    } else {
+      result.textContent =
+        `⚠️ BELUM DAPAT DINILAI: ${errorText(error)}. ` +
+        `Periksa koneksi dan konfigurasi Firebase.`;
+    }
+  } finally {
+    testRunning = false;
+    if (button) button.disabled = false;
+    renderSecurityTest();
+  }
 }
