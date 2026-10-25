@@ -17,12 +17,15 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 const ROOT_UID = "5L0w42CRcgVVvqk47dF5vVXOQOV2";
-const UPA_TEST_UID = "8tNL1G7bhjg9sUWrrtiM5YbB1tl1";
+const UPA001_ADMIN_UID = "Qo8huhew52eEOPHO9TAOZrzd8lI2";
+const UPA002_ADMIN_UID = "8tNL1G7bhjg9sUWrrtiM5YbB1tl1";
 const KNOWN_UPAS = ["UPA001", "UPA002"];
 
 const $ = id => document.getElementById(id);
 const show = el => el?.classList.remove("hidden");
 const hide = el => el?.classList.add("hidden");
+
+let currentLoadId = 0;
 
 function setMessage(id, message, error = false) {
   const el = $(id);
@@ -46,9 +49,24 @@ function escapeHTML(value) {
   })[char]);
 }
 
+function showAlert(message) {
+  const el = $("alertBox");
+  if (!el) return;
+  el.textContent = message;
+  show(el);
+}
+
+function clearAlert() {
+  const el = $("alertBox");
+  if (!el) return;
+  el.textContent = "";
+  hide(el);
+}
+
 $("loginForm")?.addEventListener("submit", async event => {
   event.preventDefault();
   setMessage("loginMessage", "Memeriksa akun…");
+
   if ($("loginBtn")) $("loginBtn").disabled = true;
 
   try {
@@ -65,6 +83,7 @@ $("loginForm")?.addEventListener("submit", async event => {
       "auth/too-many-requests": "Terlalu banyak percobaan. Coba lagi nanti.",
       "auth/network-request-failed": "Periksa koneksi internet."
     };
+
     setMessage(
       "loginMessage",
       messages[error.code] || `Login gagal: ${error.code || error.message}`,
@@ -75,27 +94,39 @@ $("loginForm")?.addEventListener("submit", async event => {
   }
 });
 
-$("logoutBtn")?.addEventListener("click", () => signOut(auth));
+$("logoutBtn")?.addEventListener("click", async () => {
+  try {
+    await signOut(auth);
+  } catch (error) {
+    showAlert(`Gagal keluar: ${error.code || error.message}`);
+  }
+});
 
 $("refreshBtn")?.addEventListener("click", () => {
   if (auth.currentUser) loadDashboard(auth.currentUser);
 });
 
 onAuthStateChanged(auth, user => {
+  currentLoadId++;
+
   if (!user) {
     show($("loginView"));
     hide($("dashboardView"));
     hide($("logoutBtn"));
+    removeIsolationPanel();
     return;
   }
 
   hide($("loginView"));
   show($("dashboardView"));
   show($("logoutBtn"));
+
   loadDashboard(user);
 });
 
 async function findMemberProfile(user) {
+  let permissionDeniedCount = 0;
+
   for (const upaId of KNOWN_UPAS) {
     try {
       const snap = await getDoc(
@@ -114,19 +145,27 @@ async function findMemberProfile(user) {
 
       return { profile, upaId };
     } catch (error) {
-      if (error.code === "permission-denied") continue;
+      if (error.code === "permission-denied") {
+        permissionDeniedCount++;
+        continue;
+      }
+
       throw error;
     }
   }
 
   return {
-    error:
-      "Profil tidak ditemukan pada UPA yang dikonfigurasi. " +
-      "Periksa ID dokumen, nama koleksi, dan Security Rules."
+    error: permissionDeniedCount === KNOWN_UPAS.length
+      ? "Profil tidak dapat dibaca pada UPA yang dikonfigurasi. " +
+        "Periksa jalur dokumen dan Security Rules."
+      : "Profil anggota tidak ditemukan. Periksa UID, nama koleksi, " +
+        "dan ID UPA."
   };
 }
 
 async function loadDashboard(user) {
+  const loadId = ++currentLoadId;
+
   $("welcomeTitle").textContent = "Memuat profil…";
   $("welcomeSubtitle").textContent = user.email || user.uid;
   $("upaName").textContent = "—";
@@ -134,7 +173,7 @@ async function loadDashboard(user) {
   $("accountStatus").textContent = "Memeriksa…";
   $("binaanList").textContent = "Memuat data…";
 
-  hide($("alertBox"));
+  clearAlert();
   removeIsolationPanel();
 
   setTest(0, "✅", "Login Firebase berhasil");
@@ -150,6 +189,8 @@ async function loadDashboard(user) {
     if (user.uid === ROOT_UID) {
       const snap = await getDoc(doc(db, "users", user.uid));
 
+      if (loadId !== currentLoadId) return;
+
       if (!snap.exists()) {
         throw new Error("Profil Admin Pusat tidak ditemukan.");
       }
@@ -158,6 +199,8 @@ async function loadDashboard(user) {
       role = "admin_pusat";
     } else {
       const result = await findMemberProfile(user);
+
+      if (loadId !== currentLoadId) return;
 
       if (!result.profile) {
         throw new Error(result.error);
@@ -193,14 +236,17 @@ async function loadDashboard(user) {
     if (role === "admin_pusat") {
       $("upaName").textContent = "Admin Pusat";
       $("upaIdLabel").textContent = "Akses tingkat pusat";
-      setTest(2, "✅", "Profil Admin Pusat berhasil dibaca");
       $("binaanList").textContent =
-        "Dashboard awal. Pilih UPA setelah fitur administrasi pusat tersedia.";
+        "Dashboard Admin Pusat. Fitur pemilihan UPA akan dibuat pada tahap berikutnya.";
+
+      setTest(2, "ℹ️", "Profil pusat berhasil dibaca");
       setTest(3, "ℹ️", "Daftar binaan belum dimuat");
       return;
     }
 
     const upaSnap = await getDoc(doc(db, "upas", upaId));
+
+    if (loadId !== currentLoadId) return;
 
     if (!upaSnap.exists()) {
       throw new Error(`Dokumen upas/${upaId} tidak ditemukan.`);
@@ -213,11 +259,13 @@ async function loadDashboard(user) {
     setTest(2, "✅", `Data ${upaId} berhasil dibaca`);
 
     try {
-      const snap = await getDocs(
+      const binaanSnap = await getDocs(
         query(collection(db, "upas", upaId, "binaan"), limit(50))
       );
 
-      let items = snap.docs;
+      if (loadId !== currentLoadId) return;
+
+      let items = binaanSnap.docs;
 
       if (role === "pembina") {
         items = items.filter(
@@ -242,12 +290,18 @@ async function loadDashboard(user) {
         "Pembacaan binaan gagal. Periksa izin akses.";
 
       setTest(3, "❌", `Akses binaan gagal: ${error.code || error.message}`);
+      showAlert(`Pembacaan binaan gagal: ${error.code || error.message}`);
     }
 
-    if (user.uid === UPA_TEST_UID) {
-      await runIsolationTest();
+    if (
+      user.uid === UPA001_ADMIN_UID ||
+      user.uid === UPA002_ADMIN_UID
+    ) {
+      await runIsolationTest(user, upaId, loadId);
     }
   } catch (error) {
+    if (loadId !== currentLoadId) return;
+
     $("welcomeTitle").textContent = "Akun belum memiliki akses";
     $("roleBadge").textContent = "Akses ditolak";
     $("accountStatus").textContent = "Periksa profil";
@@ -259,8 +313,7 @@ async function loadDashboard(user) {
     setTest(2, "—", "Belum berhasil diuji");
     setTest(3, "—", "Belum berhasil diuji");
 
-    show($("alertBox"));
-    $("alertBox").textContent = error.message;
+    showAlert(error.message);
   }
 }
 
@@ -268,50 +321,65 @@ function removeIsolationPanel() {
   document.getElementById("isolationTestResult")?.remove();
 }
 
-async function runIsolationTest() {
+async function runIsolationTest(user, ownUpaId, loadId) {
+  const targetUPA = ownUpaId === "UPA001" ? "UPA002" : "UPA001";
+
+  const targetAdminUID = targetUPA === "UPA001"
+    ? UPA001_ADMIN_UID
+    : UPA002_ADMIN_UID;
+
   const results = [];
 
   async function check(label, operation) {
     try {
       await operation();
+
       results.push({
-        label,
         status: "GAGAL",
-        detail: "Akses berhasil, padahal seharusnya ditolak."
+        label,
+        detail: "Akses berhasil. Periksa apakah aturan mengizinkan akses ini."
       });
     } catch (error) {
       if (error.code === "permission-denied") {
         results.push({
-          label,
           status: "LULUS",
+          label,
           detail: "Firestore menolak akses."
         });
       } else {
         results.push({
-          label,
           status: "BELUM PASTI",
+          label,
           detail: error.code || error.message
         });
       }
     }
   }
 
-  await check("Membaca dokumen UPA001", async () => {
-    await getDoc(doc(db, "upas", "UPA001"));
+  await check(`Membaca dokumen ${targetUPA}`, async () => {
+    await getDoc(doc(db, "upas", targetUPA));
   });
 
-  await check("Membaca profil Admin UPA001", async () => {
+  if (loadId !== currentLoadId || auth.currentUser?.uid !== user.uid) return;
+
+  await check(`Membaca profil Admin ${targetUPA}`, async () => {
     await getDoc(
-      doc(db, "upas", "UPA001", "anggota",
-        "Qo8huhew52eEOPHO9TAOZrzd8lI2")
+      doc(db, "upas", targetUPA, "anggota", targetAdminUID)
     );
   });
 
-  await check("Membaca daftar anggota UPA001", async () => {
+  if (loadId !== currentLoadId || auth.currentUser?.uid !== user.uid) return;
+
+  await check(`Membaca daftar anggota ${targetUPA}`, async () => {
     await getDocs(
-      query(collection(db, "upas", "UPA001", "anggota"), limit(1))
+      query(
+        collection(db, "upas", targetUPA, "anggota"),
+        limit(1)
+      )
     );
   });
+
+  if (loadId !== currentLoadId || auth.currentUser?.uid !== user.uid) return;
 
   let panel = document.getElementById("isolationTestResult");
 
@@ -325,12 +393,12 @@ async function runIsolationTest() {
   panel.replaceChildren();
 
   const heading = document.createElement("h2");
-  heading.textContent = "Pengujian Isolasi UPA002";
+  heading.textContent = `Pengujian Isolasi ${ownUpaId} → ${targetUPA}`;
   panel.appendChild(heading);
 
   const intro = document.createElement("p");
   intro.textContent =
-    "Pengujian baca-saja. Tidak ada dokumen yang diubah atau dihapus.";
+    "Pemeriksaan baca-saja. Tidak ada dokumen yang dibuat, diubah, atau dihapus.";
   panel.appendChild(intro);
 
   results.forEach(result => {
@@ -339,10 +407,10 @@ async function runIsolationTest() {
     panel.appendChild(p);
   });
 
-  const allPassed = results.every(item => item.status === "LULUS");
   const summary = document.createElement("p");
-  summary.textContent = allPassed
+  summary.textContent = results.every(item => item.status === "LULUS")
     ? "Ketiga percobaan akses lintas-UPA ditolak."
     : "Pengujian belum seluruhnya lulus. Periksa hasil setiap baris.";
+
   panel.appendChild(summary);
 }
